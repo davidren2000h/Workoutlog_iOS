@@ -245,3 +245,94 @@ Session.templateId ──→ WorkoutTemplate.id  (optional origin ref)
 - Timestamps stored as epoch milliseconds
 - Durations stored in seconds
 - Week starts on Monday for volume calculations
+
+---
+
+# Phase 1 Implementation Summary
+
+All 10 steps from `Prompt.md` have been executed. Below is a summary of what was created.
+
+## Project Structure
+
+```
+iOS/
+  WorkoutLogApp.swift          ← App entry point + NavigationStack
+  Docs/
+    MigrationNotes.md          ← Phase 1 migration analysis
+  Models/
+    Session.swift              ← SwiftData model
+    Activity.swift             ← SwiftData model + ActivityType enum
+    StrengthSet.swift          ← SwiftData model
+  Services/
+    DataService.swift          ← All persistence / CRUD operations
+  ViewModels/
+    TodayViewModel.swift       ← Today screen state + actions
+    SessionViewModel.swift     ← Session detail state + actions
+  Views/
+    Today/
+      TodayView.swift          ← Today screen UI
+    Session/
+      SessionDetailView.swift  ← Workout detail UI
+  Helpers/
+    DurationFormatter.swift    ← Shared duration formatting
+```
+
+## Step-by-Step Results
+
+### Step 1 — Migration Notes
+- Created `iOS/Docs/MigrationNotes.md` with Phase 1-scoped analysis.
+- Documented: Session, Activity, StrengthSet entities; relationships; CRUD operations; the start→edit→finish user flow; business rules (cascade deletes, smart defaults, ordering, effort levels).
+- No code generated.
+
+### Step 2 — SwiftData Models
+- **Session**: `date` (String), `startTime` (Date), `endTime?`, `duration?` (Int, seconds), `notes`. Cascade relationship to Activities. Computed `isActive` and `sortedActivities`.
+- **Activity**: `type` (ActivityType enum: strength/cardio/skill), `title`, `order`, `notes`. Belongs to Session. Cascade relationship to StrengthSets. Computed `sortedSets`.
+- **StrengthSet**: `setIndex`, `weight` (Double), `reps` (Int), `rpe?`, `restSeconds?`, `tempo?`, `isCompleted`. Belongs to Activity.
+- Used native `Date` instead of epoch ms. Used `@Relationship(deleteRule: .cascade)` for automatic cascading.
+
+### Step 3 — DataService
+- Single service class with `ModelContext` dependency injection.
+- **Session ops**: `createSession`, `endSession` (computes duration), `updateSessionNotes`, `deleteSession`, `sessionsForDate`.
+- **Activity ops**: `addActivity` (auto-creates first set with smart defaults), `deleteActivity`.
+- **Set ops**: `addStrengthSet` (duplicates last set values), `updateStrengthSet`, `deleteStrengthSet`.
+- **Effort**: `setEffortLevel` — applies RPE to all sets in an activity.
+- **Smart defaults**: `lastUsedDefaults` looks up the most recent session with same exercise title, returns last set's weight/reps/rpe/restSeconds.
+
+### Step 4 — TodayViewModel
+- Loads today's sessions via DataService, splits into `activeSessions` / `completedSessions`.
+- `createBlankSession()` — creates and returns session for navigation.
+- `deleteSession()` — deletes with refresh.
+
+### Step 5 — SessionViewModel
+- Holds a `Session` and exposes all mutation methods: `finishSession`, `updateNotes`, `addActivity`, `deleteActivity`, `addSet`, `updateSet`, `deleteSet`, `setEffort`.
+- Notifies UI via `objectWillChange.send()`.
+
+### Step 6 — TodayView
+- Shows "Today" header with formatted date.
+- Active sessions: green "In Progress" cards with exercise names and set completion counts.
+- Completed sessions: exercise summary, duration, delete button.
+- Empty state message when no workouts.
+- "Start Blank Workout" button → creates session → navigates to SessionDetailView via `navigationDestination(item:)`.
+
+### Step 7 — SessionDetailView
+- Start time display (active) or completed duration (finished).
+- Activity cards with: title, "Strength" badge, delete button, column headers, set rows.
+- Set rows: index, weight input, reps input, completion checkmark, delete button.
+- Effort selector: Easy (green) / Medium (orange) / Hard (red) capsule buttons.
+- "Add Exercise" button → alert with text field.
+- "Finish" toolbar button.
+- Notes text field at bottom.
+
+### Step 8 — App Navigation
+- `@main` WorkoutLogApp with SwiftData `modelContainer` for all three models.
+- ContentView wraps TodayView in a NavigationStack.
+- DataService initialized from environment `modelContext`.
+
+### Step 9 — Compilation Fixes
+- Added `@discardableResult` to `addActivity` and `addStrengthSet` (return values unused by callers).
+- Replaced tuple-based `ForEach` in effort selector (tuples aren't `Hashable`) with explicit `effortButton` method calls.
+
+### Step 10 — Refactoring
+- Extracted duplicate `formatDuration` into shared `DurationFormatter` helper.
+- Removed unused `loadSession` no-op method from DataService.
+- Removed unused `import SwiftData` from TodayView.
