@@ -1,0 +1,382 @@
+Please analyze this project and provide a structured overview of its architecture.
+
+---
+
+## 1. Data Model
+
+**Q: What fields are stored for each workout entry?**
+
+The app uses multiple entity types organized hierarchically. The core entities and their fields are:
+
+- **UserProfile**: id (number), name (string), createdAt (epoch ms)
+- **Session**: id (number), date (string YYYY-MM-DD), startTime (epoch ms), endTime (epoch ms | undefined), duration (seconds | undefined), notes (string), templateId (number | undefined)
+- **Activity**: id (number), sessionId (FK to Session), type (ActivityType: 'Strength' | 'Cardio' | 'Skill'), title (string), order (number), notes (string)
+- **StrengthSet**: id, activityId (FK), setIndex (0-based), weight (kg), reps, rpe (1-10 | undefined), restSeconds (undefined), tempo (string | undefined), isCompleted (boolean)
+- **CardioEntry**: id, activityId (FK), duration (seconds), distance (km | undefined), pace (string | undefined), avgHr (number | undefined), rpe (number | undefined)
+- **SkillEntry**: id, activityId (FK), duration (seconds), rpe (number | undefined), notes (string), tags (string[])
+- **ExerciseReference**: id, name, bodyPart, equipment, isCustom (boolean)
+- **WorkoutTemplate**: id, name, activities (TemplateActivity[])
+
+**Q: Provide a concrete JSON example of the data structure.**
+
+```json
+{
+  "id": 42,
+  "date": "2025-03-21",
+  "startTime": 1711000000000,
+  "endTime": 1711003600000,
+  "duration": 3600,
+  "notes": "Good session, felt strong",
+  "templateId": null,
+  "activities": [
+    {
+      "id": 101,
+      "sessionId": 42,
+      "type": "Strength",
+      "title": "Barbell Bench Press",
+      "order": 0,
+      "notes": "",
+      "strengthSets": [
+        {
+          "id": 555,
+          "activityId": 101,
+          "setIndex": 0,
+          "weight": 100,
+          "reps": 8,
+          "rpe": 7,
+          "restSeconds": 180,
+          "tempo": "3-1-1",
+          "isCompleted": true
+        },
+        {
+          "id": 556,
+          "activityId": 101,
+          "setIndex": 1,
+          "weight": 100,
+          "reps": 8,
+          "rpe": 8,
+          "restSeconds": 180,
+          "tempo": "3-1-1",
+          "isCompleted": true
+        }
+      ]
+    },
+    {
+      "id": 102,
+      "sessionId": 42,
+      "type": "Cardio",
+      "title": "Running",
+      "order": 1,
+      "notes": "",
+      "cardioEntry": {
+        "id": 777,
+        "activityId": 102,
+        "duration": 900,
+        "distance": 7.5,
+        "pace": "7:36/km",
+        "avgHr": 165,
+        "rpe": 8
+      }
+    }
+  ]
+}
+```
+
+**Q: Are there multiple entity types or just one?**
+
+There are 5 primary entity types with a hierarchical structure: UserProfile, Session, Activity, StrengthSet/CardioEntry/SkillEntry (polymorphic), and ExerciseReference. Plus WorkoutTemplate for reusable blueprints.
+
+**Q: How are relationships represented?**
+
+Relationships use foreign key IDs stored in IndexedDB:
+- Session → Activity: `activity.sessionId` references `session.id`
+- Activity → Sets/Entries: `strengthSet.activityId`, `cardioEntry.activityId`, `skillEntry.activityId` reference `activity.id`
+- Session → Template: `session.templateId` optionally references `template.id`
+
+View models (SessionWithActivities, ActivityWithSets) aggregate these into nested objects for the UI.
+
+---
+
+## 2. Data Persistence
+
+**Q: How is data stored?**
+
+Data is stored in **IndexedDB** via the **Dexie.js v4.0.11** library. The database is named `WorkoutLogDB`.
+
+Schema (v2):
+- sessions: ++id, date, startTime, templateId
+- activities: ++id, sessionId, type, title
+- strengthSets: ++id, activityId, setIndex
+- cardioEntries: ++id, activityId
+- skillEntries: ++id, activityId
+- exercises: ++id, name, bodyPart, equipment, isCustom
+- templates: ++id, name
+- userProfiles: ++id, name
+
+Additionally, `localStorage` stores two flags: `workoutlog-guest` (guest mode) and `workoutlog-lang` (language preference en/zh).
+
+**Q: Where is the storage logic implemented?**
+
+- Database schema & instance: `src/db/database.ts`
+- All CRUD operations (500+ lines): `src/db/operations.ts`
+- Type definitions: `src/types.ts`
+
+**Q: Is the app fully offline-capable?**
+
+Yes. The app is **fully offline-first**:
+- All data stored locally in IndexedDB — no backend API
+- No network required — works 100% offline
+- PWA with Service Worker (via vite-plugin-pwa) — installable on mobile
+- No cloud sync — data is local-only by design
+
+**Q: Is there any data migration or versioning logic?**
+
+- Schema is at **version 2** (v2 added the `userProfiles` table). Dexie handles automatic database upgrades.
+- On first launch, `seedExercisesIfEmpty()` in `src/db/database.ts` seeds ~50 default exercises (bilingual en/zh names) organized by body part.
+- `getLastUsedDefaults(exerciseTitle)` provides smart default values (weight/reps/rpe/rest) from the most recent session for auto-fill.
+
+---
+
+## 3. UI Structure
+
+**Q: What are the main screens/pages of the app?**
+
+| Page | Route | Purpose |
+|------|-------|---------|
+| WelcomePage | `/` (conditional) | First-time onboarding; choose account vs guest |
+| TodayPage | `/` | Today's workouts; start blank or from template |
+| SessionPage | `/session/:id` | Edit active workout; add exercises; log sets; finish session |
+| CalendarPage | `/calendar` | Monthly calendar view; see which days have workouts |
+| ProgressPage | `/progress` | View Personal Records and weekly volume |
+| TemplatesPage | `/templates` | Create/edit/delete workout templates |
+| ExportPage | `/export` | Export workouts as JSON or CSV by date range |
+| SharePage | `/share` | Generate shareable image of stats |
+| SettingsPage | `/settings` | Edit profile, change language, delete all data |
+
+**Q: How does navigation work between pages?**
+
+React Router v6 with a bottom navigation bar (4 tabs: Today, Calendar, Progress, More). The Layout component (`src/components/Layout.tsx`) wraps all pages with the bottom nav.
+
+Navigation flow:
+```
+WelcomePage (if no profile & not guest)
+    ↓
+    ├─→ TodayPage (/) ──→ SessionPage (/session/:id)
+    ├─→ CalendarPage (/calendar)
+    ├─→ ProgressPage (/progress)
+    └─→ SettingsPage (/settings)
+        ├─→ TemplatesPage (/templates)
+        ├─→ ExportPage (/export)
+        └─→ SharePage (/share)
+```
+
+**Q: Is this a single-page app (SPA) or multi-page?**
+
+SPA (Single-Page App) using React Router v6 for client-side routing.
+
+---
+
+## 4. Core Logic (CRUD)
+
+**Q: How is a new workout created?**
+
+1. On TodayPage, user clicks "Start Blank" or "Start from Template"
+2. `createSession(todayStr(), templateId?)` creates a Session record in IndexedDB
+3. App navigates to `/session/:id` (SessionPage)
+4. User adds exercises via ExercisePicker → `addActivity(sessionId, type, title)` creates an Activity
+5. For strength: `addSet(activityId, defaults)` creates a StrengthSet (auto-fills from last-used defaults)
+6. For cardio/skill: `upsertCardio()` or `upsertSkill()` creates/updates entries
+7. User clicks "Finish Workout" → `endSession(sessionId)` sets endTime and calculates duration
+
+**Q: How are workouts edited and deleted?**
+
+- **Edit**: In-place editing on SessionPage — `updateSet(id, changes)`, `updateActivity(id, changes)`, `updateSession(id, changes)` update IndexedDB directly, then `reload()` re-fetches fresh data.
+- **Delete session**: `deleteSession(id)` cascades — deletes all activities, then all their sets/entries, then the session itself.
+- **Delete activity**: `deleteActivity(id)` cascades — deletes related strengthSets, cardioEntries, skillEntries, then the activity.
+- **Delete set**: `deleteSet(id)` removes a single set.
+- **Delete all data**: `deleteAllData()` wipes the entire database (available in Settings).
+
+**Q: Where is the main state managed?**
+
+Each page manages its own state using React `useState` + `useEffect` hooks. Data is fetched from Dexie operations on mount and re-fetched after any mutation via a `reload()` callback. There is no centralized state store.
+
+**Q: Are there derived calculations?**
+
+Yes:
+- **Personal Records**: `getPersonalRecords(exerciseName)` scans all completed sets to find max weight, reps at max weight, and PR date.
+- **Weekly Volume**: `getWeeklyVolume(exerciseName, weekStart, weekEnd)` sums weight × reps for all completed sets in a date range.
+- **Calendar Summaries**: `getMonthSummaries(year, month)` groups sessions by date and returns workout counts and durations per day.
+- **Share Stats**: `getShareStats(start, end)` calculates total sessions, volume, duration, and exercises for a date range.
+
+---
+
+## 5. State Management
+
+**Q: How is state managed in this project?**
+
+Local React component state (`useState`, `useEffect`, `useCallback`). Each page loads its own data from IndexedDB via Dexie operations and stores it in component-level state. After any mutation, `reload()` re-fetches the latest data and triggers a re-render.
+
+**Q: Is there a global state?**
+
+Minimal — only the **i18n Context** (`src/i18n.tsx`) is global, providing `{ t, lang, setLang }` via React Context API. App data state is not global; each page queries the database independently.
+
+**Q: Is a framework used or is it vanilla JavaScript?**
+
+**React 18.3** with **TypeScript 5.6**. Uses React Router v6 for navigation.
+
+**Q: How does the UI update when data changes?**
+
+1. User action triggers handler (onChange, onClick)
+2. Handler calls a database operation (e.g., `updateSet`)
+3. After the mutation completes, `reload()` is called
+4. `reload()` fetches fresh data from IndexedDB and calls `setState`
+5. React's virtual DOM diffs and updates the changed UI elements
+
+---
+
+## 6. Analytics / Statistics
+
+**Q: Are there any charts or summaries?**
+
+Yes:
+- **Personal Records** (ProgressPage, tab 1): Select an exercise → shows max weight, reps at max weight, best reps, and PR date.
+- **Weekly Volume** (ProgressPage, tab 2): Shows total volume (Σ weight × reps) for the current week for a selected exercise.
+- **Calendar visualization** (CalendarPage): Monthly grid with workout indicators per day, showing session count and duration on day selection.
+- **Shareable stats** (SharePage): Generates a PNG image with total sessions, volume, duration, and exercises for a selected period (day/week/month/year).
+
+**Q: How are they calculated?**
+
+| Calculation | Function | Location |
+|-------------|----------|----------|
+| Personal Records | `getPersonalRecords(exerciseName)` | src/db/operations.ts |
+| Weekly Volume | `getWeeklyVolume(exerciseName, start, end)` | src/db/operations.ts |
+| Month Summaries | `getMonthSummaries(year, month)` | src/db/operations.ts |
+| Share Stats | `getShareStats(start, end)` | src/db/operations.ts |
+
+**Q: Where is this logic implemented?**
+
+All calculation logic lives in `src/db/operations.ts`. Share image rendering uses `src/utils/shareImage.ts` to draw stats on an HTML canvas.
+
+---
+
+## 7. Tech Stack
+
+**Q: What frameworks or libraries are used?**
+
+- **React** 18.3.1 — UI library
+- **TypeScript** 5.6 — Static typing
+- **React Router** 6.28.0 — SPA client-side routing
+- **Dexie.js** 4.0.11 — IndexedDB wrapper for data persistence
+- **dexie-react-hooks** 1.1.7 — React hooks for Dexie live queries
+- **vite-plugin-pwa** 0.21.1 — Service worker and PWA manifest generation (Workbox-based)
+- **gh-pages** 6.3.0 — Deployment to GitHub Pages
+- **sharp** 0.34.5 — Image processing for generating PWA icons
+
+**Q: What build tools are used?**
+
+- **Vite** 6.0.0 — Bundler and dev server
+- **@vitejs/plugin-react** 4.3.4 — React Fast Refresh support
+- **TypeScript Compiler (tsc)** — Type checking
+- Build output goes to `dist/`, deployed to GitHub Pages with base path `/WorkoutLog/`
+
+---
+
+## 8. Key Files
+
+### Entry Points
+| File | Purpose |
+|------|---------|
+| src/main.tsx | React root mount point |
+| index.html | HTML template (minimal) |
+| src/App.tsx | Main router setup, auth/onboarding flow |
+
+### Data Layer
+| File | Purpose |
+|------|---------|
+| src/types.ts | TypeScript interfaces for all entities (Session, Activity, StrengthSet, etc.) |
+| src/db/database.ts | Dexie schema definition, DB instance creation, exercise seeding |
+| src/db/operations.ts | All CRUD operations + analytics queries (500+ lines) |
+
+### Pages (View Layer)
+| File | Purpose |
+|------|---------|
+| src/pages/TodayPage.tsx | Today's workouts, start new session |
+| src/pages/SessionPage.tsx | Active session editor (largest component) |
+| src/pages/CalendarPage.tsx | Monthly calendar with workout indicators |
+| src/pages/ProgressPage.tsx | Personal records and weekly volume |
+| src/pages/TemplatesPage.tsx | Create/edit workout templates |
+| src/pages/ExportPage.tsx | Export as JSON/CSV |
+| src/pages/SharePage.tsx | Generate shareable stats image |
+| src/pages/SettingsPage.tsx | Profile, language, data management |
+| src/pages/WelcomePage.tsx | First-time onboarding |
+
+### Reusable Components
+| File | Purpose |
+|------|---------|
+| src/components/Layout.tsx | Bottom navigation bar, main container |
+| src/components/SetRow.tsx | Single set input row (weight, reps, completed toggle) |
+| src/components/CardioForm.tsx | Cardio activity form (duration, distance, HR, RPE) |
+| src/components/SkillForm.tsx | Skill activity form (duration, RPE, notes, tags) |
+| src/components/ExercisePicker.tsx | Exercise selection modal with search |
+| src/components/Timer.tsx | Session stopwatch timer |
+| src/components/RestTimer.tsx | Rest period countdown timer |
+
+### Utilities & Config
+| File | Purpose |
+|------|---------|
+| src/utils.ts | Helper functions (formatDuration, todayStr, etc.) |
+| src/utils/exerciseNames.ts | Bilingual exercise name translations (en/zh) |
+| src/utils/shareImage.ts | Canvas-based image generation for sharing |
+| src/i18n.tsx | Internationalization with 300+ keys (English and Chinese) |
+| src/App.css | All CSS styles — mobile-first, supports dark mode |
+| vite.config.ts | Vite + PWA configuration |
+| package.json | Dependencies and build scripts |
+
+---
+
+## 9. iOS Migration (High-Level)
+
+**Q: How should the data model be structured?**
+
+Use Core Data (NSPersistentContainer) with these entities mirroring the web app:
+- **User**: id (UUID), name (String), createdAt (Date) → has many Sessions
+- **Session**: id (UUID), date (Date), startTime (Date), endTime (Date?), duration (Int?), notes (String), templateId (UUID?) → has many Activities
+- **Activity**: id (UUID), session (Session inverse), type (ActivityType enum), title (String), order (Int), notes (String) → polymorphic children
+- **StrengthSet**: id (UUID), activity (Activity), setIndex (Int), weight (Double), reps (Int), rpe (Int?), restSeconds (Int?), tempo (String?), isCompleted (Bool)
+- **CardioEntry**: id (UUID), activity (Activity), duration (Int), distance (Double?), pace (String?), avgHr (Int?), rpe (Int?)
+- **SkillEntry**: id (UUID), activity (Activity), duration (Int), rpe (Int?), notes (String), tags ([String])
+- **ExerciseReference**: id (UUID), name (String), bodyPart (String), equipment (String), isCustom (Bool)
+- **WorkoutTemplate**: id (UUID), name (String), activities ([TemplateActivity])
+
+Core Data relationships replace foreign key IDs with proper inverse relationships.
+
+**Q: What storage approach should be used?**
+
+- **Primary**: Core Data with SQLite backend — handles ACID compliance, relationship management, and query predicates.
+- **Secondary**: UserDefaults for simple flags (language preference, guest mode).
+- **Live queries**: SwiftUI @FetchRequest for automatic UI updates when data changes. @ObservedObject / @StateObject for ViewModel-based state.
+
+No cloud sync needed (offline-first design matches the web app).
+
+**Q: What screens should exist?**
+
+TabView with 4 tabs:
+
+1. **Today Tab**: Active and completed workouts for today. Buttons to start blank session or from template. Tapping a session navigates to SessionDetailView.
+2. **Calendar Tab**: Monthly grid with workout indicators. Tap a day to see its sessions. Month navigation (prev/next).
+3. **Progress Tab**: Exercise picker dropdown + stat cards (max weight, reps at max, best reps, PR date, weekly volume).
+4. **More Tab**: Links to Templates, Export, Share, and Settings sub-pages.
+
+Modal flows:
+- SessionDetailView (edit active session, add exercises, log sets, finish workout)
+- ExercisePickerView (search and select exercises)
+- RestTimerView (fullscreen countdown overlay)
+
+**Q: How should navigation be designed?**
+
+Use SwiftUI NavigationStack with TabView:
+- TabView for top-level navigation (Today, Calendar, Progress, More)
+- NavigationStack for drill-down within each tab (e.g., Today → SessionDetail)
+- Sheet/fullScreenCover for modals (ExercisePicker, RestTimer)
+- MVVM pattern: each major screen gets its own ObservableObject ViewModel that wraps Core Data queries and mutations
+- A shared DataManager singleton handles all Core Data CRUD operations, mirroring the role of `src/db/operations.ts` in the web app
