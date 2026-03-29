@@ -3,3 +3,7 @@ dist
 .vite
 *.local
 .DS_Store
+
+# Xcode user data
+*.xcuserstate
+xcuserdata/
