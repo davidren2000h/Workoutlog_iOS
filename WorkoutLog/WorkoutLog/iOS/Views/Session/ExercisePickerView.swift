@@ -171,13 +171,13 @@ struct ExercisePickerView: View {
 
     private func categoryIcon(_ category: String) -> String {
         switch category {
-        case "Chest": return "figure.strengthtraining.traditional"
-        case "Back": return "figure.rowing"
+        case "Chest": return "figure.highintensity.intervaltraining"
+        case "Back": return "figure.climbing"
         case "Shoulders": return "figure.arms.open"
-        case "Biceps": return "figure.curling"
-        case "Triceps": return "figure.boxing"
-        case "Legs": return "figure.run"
-        case "Abs": return "figure.core.training"
+        case "Biceps": return "dumbbell.fill"
+        case "Triceps": return "figure.strengthtraining.functional"
+        case "Legs": return "figure.squat"
+        case "Abs": return "figure.flexibility"
         case "Cardio": return "heart.fill"
         default: return "dumbbell"
         }
