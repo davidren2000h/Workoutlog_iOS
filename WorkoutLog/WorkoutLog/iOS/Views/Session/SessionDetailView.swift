@@ -3,10 +3,12 @@ import SwiftUI
 struct SessionDetailView: View {
     @StateObject private var viewModel: SessionViewModel
     @State private var showExercisePicker = false
-    @State private var exerciseName = ""
     @Environment(\.dismiss) private var dismiss
 
+    private let dataService: DataService
+
     init(session: Session, dataService: DataService) {
+        self.dataService = dataService
         _viewModel = StateObject(wrappedValue: SessionViewModel(session: session, dataService: dataService))
     }
 
@@ -73,17 +75,9 @@ struct SessionDetailView: View {
                 }
             }
         }
-        .alert("Add Exercise", isPresented: $showExercisePicker) {
-            TextField("Exercise name", text: $exerciseName)
-            Button("Add") {
-                let name = exerciseName.trimmingCharacters(in: .whitespaces)
-                if !name.isEmpty {
-                    viewModel.addActivity(title: name)
-                }
-                exerciseName = ""
-            }
-            Button("Cancel", role: .cancel) {
-                exerciseName = ""
+        .sheet(isPresented: $showExercisePicker) {
+            ExercisePickerView(dataService: dataService) { name, type in
+                viewModel.addActivity(title: name, type: type)
             }
         }
     }

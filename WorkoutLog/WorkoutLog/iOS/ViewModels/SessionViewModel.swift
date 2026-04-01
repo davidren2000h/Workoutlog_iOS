@@ -30,8 +30,8 @@ final class SessionViewModel: ObservableObject {
 
     // MARK: - Activity
 
-    func addActivity(title: String) {
-        dataService.addActivity(to: session, type: .strength, title: title)
+    func addActivity(title: String, type: ActivityType = .strength) {
+        dataService.addActivity(to: session, type: type, title: title)
         objectWillChange.send()
     }
 

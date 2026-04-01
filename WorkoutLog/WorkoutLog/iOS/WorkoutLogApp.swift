@@ -7,7 +7,7 @@ struct WorkoutLogApp: App {
         WindowGroup {
             ContentView()
         }
-        .modelContainer(for: [Session.self, Activity.self, StrengthSet.self])
+        .modelContainer(for: [Session.self, Activity.self, StrengthSet.self, ExerciseReference.self])
     }
 }
 
@@ -17,6 +17,9 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             TodayView(dataService: DataService(modelContext: modelContext))
+        }
+        .onAppear {
+            DataService(modelContext: modelContext).seedExercisesIfEmpty()
         }
     }
 }
